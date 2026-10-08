@@ -1,0 +1,30 @@
+{
+  "name": "expense-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thetpaing8319/expense-bot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/thetpaing8319/expense-bot/issues"
+  },
+  "homepage": "https://github.com/thetpaing8319/expense-bot#readme",
+  "dependencies": {
+    "@prisma/client": "^5.20.0",
+    "dotenv": "^18.0.6",
+    "express": "^5.2.1",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "prisma": "^5.20.0"
+  }
+}
