@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const SoundCloud = require('soundcloud-scraper');
+const ytSearch = require('yt-search');
 const fs = require('fs');
 
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN မရှိပါ!');
@@ -18,18 +19,25 @@ bot.command('play', async (ctx) => {
     const waitMsg = await ctx.reply('🔍 သီချင်းရှာနေပါတယ်... ခဏစောင့်ပါဗျ။');
 
     try {
-        // သီချင်းရှာဖွေခြင်း
-        const searchResults = await scClient.search(query, 'track');
+        const ytResult = await ytSearch(query);
+        const video = ytResult.videos.length > 0 ? ytResult.videos[0] : null;
 
-        if (!searchResults || searchResults.length === 0) {
+        if (!video) {
             return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းရှာမတွေ့ပါဘူးဗျ။ တခြားနာမည် ပြောင်းရှာကြည့်ပါ။');
         }
 
-        const track = searchResults[0];
-        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${track.title}** ကို ဆွဲနေပါတယ်... (စက်ထဲသို့ သိမ်းနေသည်)`);
+        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${video.title}** ကို ဆွဲနေပါတယ်... (စက်ထဲသို့ သိမ်းနေသည်)`);
 
-        // 10s ပြဿနာမရှိစေရန် downloadProgressive() ကို အသုံးပြုခြင်း
-        const stream = await track.downloadProgressive();
+        const scResult = await scClient.search(video.title, 'track');
+        
+        if (!scResult || scResult.length === 0) {
+            return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းကို ဒေါင်းလုဒ်ဆွဲရန် မတွေ့ရှိပါ။');
+        }
+
+        // Error ဖြေရှင်းထားသော အပိုင်း (URL မှတစ်ဆင့် သီချင်းအပြည့်အစုံကို ပြန်ခေါ်ခြင်း)
+        const fullTrack = await scClient.getSongInfo(scResult[0].url);
+        const stream = await fullTrack.downloadProgressive();
+        
         const fileName = `./${Date.now()}.mp3`;
         const writeStream = fs.createWriteStream(fileName);
 
@@ -42,8 +50,8 @@ bot.command('play', async (ctx) => {
                 await ctx.replyWithAudio({
                     source: fileName
                 }, {
-                    title: track.title,
-                    performer: track.author.name || "Unknown Artist"
+                    title: video.title,
+                    performer: fullTrack.author.name || "Unknown Artist"
                 });
 
                 if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
@@ -51,7 +59,7 @@ bot.command('play', async (ctx) => {
 
             } catch (sendError) {
                 console.error("Telegram Send Error:", sendError);
-                ctx.reply('❌ Telegram သို့ ပို့ရာတွင် ဖိုင်ဆိုဒ်ကြီးလွန်းသဖြင့် အမှားအယွင်းဖြစ်သွားပါတယ်။');
+                ctx.reply('❌ Telegram သို့ ပို့ရာတွင် အမှားအယွင်းဖြစ်သွားပါတယ်။');
                 if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
             }
         });
@@ -67,4 +75,4 @@ bot.command('play', async (ctx) => {
     }
 });
 
-bot.launch().then(() => console.log('Music Bot is running with SoundCloud Scraper...')).catch(err => console.error(err));
+bot.launch().then(() => console.log('Music Bot is running smoothly...')).catch(err => console.error(err));
