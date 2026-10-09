@@ -1,11 +1,21 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const scdl = require('soundcloud-downloader').default;
+const play = require('play-dl');
 const fs = require('fs');
 
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN မရှိပါ!');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+
+// အရင်က Error တက်သော Client ID ပြဿနာကို ဖြေရှင်းပေးမည့်အပိုင်း
+play.getFreeClientID().then((clientID) => {
+    play.setToken({
+        soundcloud: {
+            client_id: clientID
+        }
+    });
+    console.log("SoundCloud Client ID အောင်မြင်စွာ ချိတ်ဆက်ပြီးပါပြီ။");
+}).catch(err => console.error("SoundCloud Client ID Error:", err));
 
 bot.start((ctx) => ctx.reply('🎵 Music Bot မှ ကြိုဆိုပါတယ်။\nသီချင်းရှာရန် ဥပမာ: /play လွမ်းရက်တွေ ဟု ရိုက်ထည့်ပါ။'));
 
@@ -14,31 +24,28 @@ bot.command('play', async (ctx) => {
     
     if (!query) return ctx.reply('ကျေးဇူးပြု၍ သီချင်းနာမည် ရိုက်ထည့်ပါ။ ဥပမာ: /play လွမ်းရက်တွေ');
 
-    const waitMsg = await ctx.reply('🔍 သီချင်းရှာနေပါတယ်... ခဏစောင့်ပါဗျ。');
+    const waitMsg = await ctx.reply('🔍 သီချင်းရှာနေပါတယ်... ခဏစောင့်ပါဗျ။');
 
     try {
-        // SoundCloud တွင် သီချင်းရှာဖွေခြင်း
-        const searchResult = await scdl.search({
-            query: query,
-            resourceType: 'tracks',
-            limit: 1
+        const searchResult = await play.search(query, {
+            limit: 1,
+            source: { soundcloud: "tracks" }
         });
 
-        if (!searchResult.collection || searchResult.collection.length === 0) {
+        if (!searchResult || searchResult.length === 0) {
             return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းရှာမတွေ့ပါဘူးဗျ။ တခြားနာမည် ပြောင်းရှာကြည့်ပါ။');
         }
 
-        const track = searchResult.collection[0];
-        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${track.title}** ကို ဆွဲနေပါတယ်... (စက်ထဲသို့ သိမ်းနေသည်)`);
+        const track = searchResult[0];
+        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${track.name}** ကို ဆွဲနေပါတယ်... (စက်ထဲသို့ သိမ်းနေသည်)`);
 
-        // SoundCloud မှ အသံဖိုင်ကို ဒေါင်းလုဒ်ဆွဲခြင်း
-        const stream = await scdl.download(track.permalink_url);
+        // သီချင်းအပြည့်ကို Stream အဖြစ် ဆွဲယူခြင်း
+        const stream = await play.stream(track.url);
         const fileName = `./${Date.now()}.mp3`;
         const writeStream = fs.createWriteStream(fileName);
 
-        stream.pipe(writeStream);
+        stream.stream.pipe(writeStream);
 
-        // စက်ထဲသိမ်းတာ ပြီးသွားရင် Telegram ဆီပို့မည်
         writeStream.on('finish', async () => {
             try {
                 await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `📤 Telegram သို့ ပို့နေပါပြီ...`);
@@ -46,11 +53,10 @@ bot.command('play', async (ctx) => {
                 await ctx.replyWithAudio({
                     source: fileName
                 }, {
-                    title: track.title,
-                    performer: track.user.username
+                    title: track.name,
+                    performer: track.publisher?.artist || "Unknown Artist"
                 });
 
-                // ပို့ပြီးတာနဲ့ ဖိုင်ကို ဖျက်မည်
                 if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
                 await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id);
 
@@ -61,7 +67,7 @@ bot.command('play', async (ctx) => {
             }
         });
 
-        stream.on('error', (err) => {
+        stream.stream.on('error', (err) => {
             console.error("Download Error:", err.message);
             ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ ဒေါင်းလုဒ်ဆွဲရာတွင် အမှားအယွင်းဖြစ်သွားပါသည်။');
         });
@@ -72,4 +78,4 @@ bot.command('play', async (ctx) => {
     }
 });
 
-bot.launch().then(() => console.log('Music Bot is running with SoundCloud Downloader...')).catch(err => console.error(err));
+bot.launch().then(() => console.log('Music Bot is running with Play-DL...')).catch(err => console.error(err));
