@@ -1,96 +1,364 @@
 require('dotenv').config();
+
 const { Telegraf } = require('telegraf');
 const ytSearch = require('yt-search');
 const axios = require('axios');
-const fs = require('fs');
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { Transform } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 
-if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN မရှိပါ!');
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// ───── Settings ─────
 
-// Piped API ဆာဗာများ (YouTube ကို ကျော်ဖြတ်ရန်)
-const PIPED_INSTANCES = [
-    'https://pipedapi.kavin.rocks',
-    'https://pipedapi.tokhmi.xyz',
-    'https://api.piped.projectsegfau.lt'
-];
+if (!process.env.BOT_TOKEN) {
+    throw new Error('BOT_TOKEN မရှိပါ!');
+}
 
-bot.start((ctx) => ctx.reply('🎵 Music Bot မှ ကြိုဆိုပါတယ်။\nသီချင်းရှာရန်: /play သီချင်းနာမည် ဟု ရိုက်ထည့်ပါ။'));
+const bot = new Telegraf(process.env.BOT_TOKEN, {
+    handlerTimeout: 240000
+});
 
-bot.command('play', async (ctx) => {
-    const query = ctx.message.text.split(' ').slice(1).join(' ');
-    if (!query) return ctx.reply('ကျေးဇူးပြု၍ သီချင်းနာမည် ရိုက်ထည့်ပါ။ ဥပမာ: /play perfect');
+// ဆာဗာများ လက်ရှိ အလုပ်လုပ်နေကြောင်း အာမမခံနိုင်ပါ။
+const PIPED_INSTANCES = (
+    process.env.PIPED_INSTANCES ||
+    [
+        'https://pipedapi.kavin.rocks',
+        'https://pipedapi.tokhmi.xyz',
+        'https://api.piped.projectsegfau.lt'
+    ].join(',')
+)
+    .split(',')
+    .map(url => url.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
 
-    const waitMsg = await ctx.reply('🔍 သီချင်းရှာနေပါတယ်... ခဏစောင့်ပါဗျ။');
+const MAX_FILE_BYTES = 45 * 1024 * 1024;
+const activeUsers = new Set();
 
+// ───── Helpers ─────
+
+function errorReason(error) {
+    if (error.response?.status) {
+        return `HTTP ${error.response.status}`;
+    }
+
+    return `${error.code || 'ERROR'}: ${
+        error.message || 'Unknown error'
+    }`;
+}
+
+async function safeReply(ctx, text) {
     try {
-        // ၁။ YouTube မှ သီချင်း Video ID ရှာဖွေခြင်း
-        const ytResult = await ytSearch(query);
-        const video = ytResult.videos.length > 0 ? ytResult.videos[0] : null;
+        await ctx.reply(text);
+    } catch {
+        console.error('[Telegram] Reply မပို့နိုင်ပါ');
+    }
+}
 
-        if (!video) {
-            return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းရှာမတွေ့ပါဘူးဗျ။');
-        }
+async function updateStatus(ctx, messageId, text) {
+    try {
+        await ctx.telegram.editMessageText(
+            ctx.chat.id,
+            messageId,
+            undefined,
+            text
+        );
+    } catch {
+        console.warn('[Telegram] Status မပြောင်းနိုင်ပါ');
+    }
+}
 
-        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${video.title}** ကို ရှာဖွေရရှိပါပြီ... ဒေါင်းလုဒ်ပြင်ဆင်နေပါသည်`);
+// API တစ်ခုက link ရပြီး download မရရင်
+// နောက် API တစ်ခုကို ဆက်စမ်းပါမယ်။
+async function downloadFromPiped(videoId, filePath) {
+    const failures = [];
 
-        // ၂။ Piped API များကိုသုံး၍ Audio Link ရယူခြင်း
-        let audioUrl = null;
-        for (const instance of PIPED_INSTANCES) {
-            try {
-                const res = await axios.get(`${instance}/streams/${video.videoId}`, { timeout: 10000 });
-                if (res.data && res.data.audioStreams && res.data.audioStreams.length > 0) {
-                    // m4a format ကို ဦးစားပေးရွေးချယ်ပါ (Telegram အတွက် အဆင်ပြေဆုံး)
-                    const stream = res.data.audioStreams.find(s => s.mimeType.includes('audio/mp4'));
-                    if (stream && stream.url) {
-                        audioUrl = stream.url;
-                        break; // Link ရရင် ရပ်မယ်
+    for (const instance of PIPED_INSTANCES) {
+        try {
+            const { data } = await axios.get(
+                `${instance}/streams/${encodeURIComponent(videoId)}`,
+                {
+                    timeout: 12000,
+                    headers: {
+                        Accept: 'application/json'
                     }
                 }
-            } catch (err) {
-                continue; // အလုပ်မလုပ်ရင် နောက်ဆာဗာတစ်ခု ပြောင်းစမ်းမယ်
+            );
+
+            if (
+                !Array.isArray(data?.audioStreams) ||
+                data.audioStreams.length === 0
+            ) {
+                throw new Error(
+                    'Response ထဲမှာ audioStreams မပါပါ'
+                );
             }
+
+            const candidates = data.audioStreams
+                .filter(stream =>
+                    typeof stream?.url === 'string' &&
+                    /^https?:\/\//i.test(stream.url) &&
+                    (
+                        String(stream.mimeType || '')
+                            .toLowerCase()
+                            .includes('audio/mp4') ||
+                        String(stream.format || '')
+                            .toUpperCase() === 'M4A'
+                    )
+                )
+                .sort((a, b) =>
+                    (Number(a.bitrate) || 0) -
+                    (Number(b.bitrate) || 0)
+                );
+
+            if (candidates.length === 0) {
+                const formats = data.audioStreams
+                    .map(stream =>
+                        stream?.mimeType ||
+                        stream?.format ||
+                        'unknown'
+                    )
+                    .join(', ');
+
+                throw new Error(
+                    `M4A မရပါ။ Formats: ${formats}`
+                );
+            }
+
+            // File size သက်သာစေရန် bitrate နည်းတာကိုရွေးသည်။
+            const selected = candidates[0];
+
+            // Download တစ်ကြိမ်ကို အများဆုံး ၄၅ စက္ကန့်။
+            const controller = new AbortController();
+            const timer = setTimeout(
+                () => controller.abort(),
+                45000
+            );
+
+            try {
+                const response = await axios.get(selected.url, {
+                    responseType: 'stream',
+                    timeout: 20000,
+                    signal: controller.signal
+                });
+
+                const contentType = String(
+                    response.headers['content-type'] || ''
+                ).toLowerCase();
+
+                if (
+                    contentType.includes('text/') ||
+                    contentType.includes('json')
+                ) {
+                    response.data.destroy();
+                    throw new Error(
+                        'Audio အစား HTML/Text response ရနေပါသည်'
+                    );
+                }
+
+                const declaredSize = Number(
+                    response.headers['content-length'] || 0
+                );
+
+                if (declaredSize > MAX_FILE_BYTES) {
+                    response.data.destroy();
+                    throw new Error(
+                        'ဖိုင်အရွယ်အစား 45 MB ထက်ကြီးနေပါသည်'
+                    );
+                }
+
+                let downloadedBytes = 0;
+
+                const sizeLimiter = new Transform({
+                    transform(chunk, encoding, callback) {
+                        downloadedBytes += chunk.length;
+
+                        if (downloadedBytes > MAX_FILE_BYTES) {
+                            return callback(
+                                new Error(
+                                    'ဖိုင်အရွယ်အစား 45 MB ကျော်သွားပါသည်'
+                                )
+                            );
+                        }
+
+                        callback(null, chunk);
+                    }
+                });
+
+                await pipeline(
+                    response.data,
+                    sizeLimiter,
+                    fs.createWriteStream(filePath),
+                    { signal: controller.signal }
+                );
+
+                if (downloadedBytes === 0) {
+                    throw new Error('ရရှိသည့်ဖိုင်မှာ ဗလာဖြစ်နေပါသည်');
+                }
+            } finally {
+                clearTimeout(timer);
+            }
+
+            console.log(`[Piped OK] ${instance}`);
+            return;
+
+        } catch (error) {
+            const reason = errorReason(error);
+
+            console.error(
+                `[Piped Failed] ${instance} — ${reason}`
+            );
+
+            failures.push(`${instance}: ${reason}`);
+
+            // Download တစ်ဝက်တစ်ပျက်ဖိုင် ရှိရင် ဖျက်ပါ။
+            await fsp.rm(filePath, { force: true }).catch(() => {});
+        }
+    }
+
+    const error = new Error(
+        'ဆာဗာအားလုံးမှ Audio မရပါ။\n' +
+        failures.join('\n')
+    );
+
+    error.code = 'AUDIO_UNAVAILABLE';
+    throw error;
+}
+
+// ───── Commands ─────
+
+bot.start(ctx =>
+    ctx.reply(
+        '🎵 Music Bot မှ ကြိုဆိုပါတယ်။\n\n' +
+        'သီချင်းရှာရန်:\n' +
+        '/play သီချင်းနာမည်\n\n' +
+        'ဥပမာ: /play perfect'
+    )
+);
+
+bot.command('play', async ctx => {
+    const query = (ctx.message?.text || '')
+        .replace(/^\/play(?:@\w+)?(?:\s+|$)/i, '')
+        .trim();
+
+    if (!query) {
+        await safeReply(
+            ctx,
+            'သီချင်းနာမည် ထည့်ပေးပါ။\nဥပမာ: /play perfect'
+        );
+        return;
+    }
+
+    const userId = ctx.from.id;
+
+    if (activeUsers.has(userId)) {
+        await safeReply(
+            ctx,
+            '⏳ အရင်သီချင်းကို လုပ်ဆောင်နေပါတယ်။ ခဏစောင့်ပေးပါ။'
+        );
+        return;
+    }
+
+    activeUsers.add(userId);
+
+    let waitMsg;
+    let tempDir;
+
+    try {
+        waitMsg = await ctx.reply(
+            '🔍 သီချင်းရှာနေပါတယ်...'
+        );
+
+        const result = await ytSearch(query);
+        const video = result.videos?.[0];
+
+        if (!video) {
+            await updateStatus(
+                ctx,
+                waitMsg.message_id,
+                '❌ သီချင်းရှာမတွေ့ပါ။ နာမည်ပြောင်းပြီး စမ်းကြည့်ပါ။'
+            );
+            return;
         }
 
-        if (!audioUrl) {
-            throw new Error("ဆာဗာများအားလုံးမှ Audio Link မရရှိနိုင်ပါ။");
-        }
+        await updateStatus(
+            ctx,
+            waitMsg.message_id,
+            `🎧 ${video.title}\n\n` +
+            '📥 Audio ရယူနေပါတယ်။ ခဏစောင့်ပေးပါ။'
+        );
 
-        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `📥 သီချင်းဖိုင်ကို ဒေါင်းလုဒ်ဆွဲနေပါသည်... (စက္ကန့်အနည်းငယ် ကြာနိုင်ပါသည်)`);
+        tempDir = await fsp.mkdtemp(
+            path.join(os.tmpdir(), 'music-bot-')
+        );
 
-        // ၃။ Audio Link မှ ဖိုင်ကို Bot ထဲသို့ တိုက်ရိုက်ဆွဲချခြင်း
-        const fileName = `./${Date.now()}.m4a`;
-        const response = await axios({
-            method: 'GET',
-            url: audioUrl,
-            responseType: 'stream'
-        });
+        const filePath = path.join(tempDir, 'audio.m4a');
 
-        const writer = fs.createWriteStream(fileName);
-        response.data.pipe(writer);
+        await downloadFromPiped(video.videoId, filePath);
 
-        await new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
+        await updateStatus(
+            ctx,
+            waitMsg.message_id,
+            '📤 Telegram သို့ ပို့နေပါတယ်...'
+        );
 
-        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `📤 Telegram သို့ ပို့နေပါပြီ...`);
+        await ctx.replyWithAudio(
+            {
+                source: filePath,
+                filename: 'audio.m4a'
+            },
+            {
+                title: video.title,
+                performer: video.author?.name || 'Unknown',
+                caption: `🎵 ${video.title}`.slice(0, 900)
+            }
+        );
 
-        // ၄။ Telegram သို့ ပို့ဆောင်ခြင်း
-        await ctx.replyWithAudio({
-            source: fileName
-        }, {
-            title: video.title,
-            performer: video.author.name
-        });
-
-        // ၅။ ပို့ပြီးတာနဲ့ ဖိုင်ကို ပြန်ဖျက်ခြင်း (Server နေရာမပြည့်အောင်)
-        if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
-        await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id);
+        await ctx.telegram.deleteMessage(
+            ctx.chat.id,
+            waitMsg.message_id
+        ).catch(() => {});
 
     } catch (error) {
-        console.error("Music Error:", error.message);
-        ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ အမှားအယွင်းဖြစ်သွားပါသည်။ အခြားသီချင်းခေါင်းစဉ်ဖြင့် ပြန်လည်စမ်းသပ်ကြည့်ပါ။');
+        console.error('[Music Error]', errorReason(error));
+
+        const message = error.code === 'AUDIO_UNAVAILABLE'
+            ? '❌ Audio ဆာဗာများမှ ဖိုင်မရနိုင်ပါ။\n' +
+              'ခဏကြာမှ ပြန်စမ်းပေးပါ။\n' +
+              'အသေးစိတ်အကြောင်းရင်းကို Server Logs မှာ ကြည့်နိုင်ပါတယ်။'
+            : '❌ သီချင်းရယူခြင်း သို့မဟုတ် ပို့ခြင်း မအောင်မြင်ပါ။\n' +
+              'အသေးစိတ်အကြောင်းရင်းကို Server Logs မှာ ကြည့်နိုင်ပါတယ်။';
+
+        if (waitMsg) {
+            await updateStatus(ctx, waitMsg.message_id, message);
+        } else {
+            await safeReply(ctx, message);
+        }
+
+    } finally {
+        if (tempDir) {
+            await fsp.rm(tempDir, {
+                recursive: true,
+                force: true
+            }).catch(() => {
+                console.warn('[Cleanup] ယာယီဖိုင် မရှင်းနိုင်ပါ');
+            });
+        }
+
+        activeUsers.delete(userId);
     }
 });
 
-bot.launch().then(() => console.log('Music Bot is running successfully...')).catch(err => console.error(err));
+// Token ပါနိုင်တဲ့ error object အပြည့်အစုံကို မထုတ်ပါ။
+bot.catch(error => {
+    console.error('[Bot Error]', errorReason(error));
+});
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+bot.launch().catch(error => {
+    console.error('[Launch Error]', errorReason(error));
+    process.exitCode = 1;
+});
