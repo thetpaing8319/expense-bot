@@ -39,13 +39,33 @@ const activeUsers = new Set();
 // ───── Helpers ─────
 
 function errorReason(error) {
-    if (error.response?.status) {
-        return `HTTP ${error.response.status}`;
+    let reason;
+
+    if (typeof error === 'string') {
+        reason = error;
+    } else {
+        reason =
+            error?.message ||
+            error?.description ||
+            error?.cause?.message ||
+            'Unknown error';
     }
 
-    return `${error.code || 'ERROR'}: ${
-        error.message || 'Unknown error'
-    }`;
+    if (error?.response?.status) {
+        reason = `HTTP ${error.response.status}: ${reason}`;
+    }
+
+    if (error?.code) {
+        reason = `${error.code}: ${reason}`;
+    }
+
+    // Log ထဲ Bot Token မပါအောင် ဖျောက်ထားသည်။
+    const token = process.env.BOT_TOKEN;
+    if (token) {
+        reason = String(reason).split(token).join('[TOKEN HIDDEN]');
+    }
+
+    return String(reason).slice(0, 1500);
 }
 
 async function safeReply(ctx, text) {
