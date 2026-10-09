@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const ytSearch = require('yt-search');
-const youtubedl = require('youtube-dl-exec');
+const play = require('play-dl');
 const fs = require('fs');
 
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN မရှိပါ!');
@@ -27,21 +27,14 @@ bot.command('play', async (ctx) => {
 
         await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${video.title}** ကို ဆွဲနေပါတယ်...`);
 
+        // Python မလိုသော play-dl ဖြင့် ဒေါင်းလုဒ်ဆွဲခြင်း
+        const stream = await play.stream(video.url);
         const fileName = `./${Date.now()}.mp3`;
+        const writeStream = fs.createWriteStream(fileName);
 
-        // youtube-dl-exec ဖြင့် 429 Error ကို ကျော်လွှားပြီး ဒေါင်းလုဒ်ဆွဲခြင်း
-        youtubedl(video.url, {
-            extractAudio: true,
-            audioFormat: 'mp3',
-            output: fileName,
-            noCheckCertificates: true,
-            noWarnings: true,
-            preferFreeFormats: true,
-            addHeader: [
-                'referer:youtube.com',
-                'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
-            ]
-        }).then(async () => {
+        stream.stream.pipe(writeStream);
+
+        writeStream.on('finish', async () => {
             try {
                 await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `📤 Telegram သို့ ပို့နေပါပြီ...`);
                 
@@ -60,10 +53,11 @@ bot.command('play', async (ctx) => {
                 ctx.reply('❌ Telegram သို့ ပို့ရာတွင် အမှားအယွင်းဖြစ်သွားပါတယ်။');
                 if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
             }
-        }).catch((err) => {
+        });
+
+        stream.stream.on('error', (err) => {
             console.error("Download Error:", err.message);
             ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ ဒေါင်းလုဒ်ဆွဲရာတွင် အမှားအယွင်းဖြစ်သွားပါသည်။');
-            if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
         });
 
     } catch (error) {
@@ -72,4 +66,4 @@ bot.command('play', async (ctx) => {
     }
 });
 
-bot.launch().then(() => console.log('Music Bot is running with youtube-dl-exec...')).catch(err => console.error(err));
+bot.launch().then(() => console.log('Music Bot is running smoothly with play-dl...')).catch(err => console.error(err));
