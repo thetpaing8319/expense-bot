@@ -1,21 +1,12 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const play = require('play-dl');
+const SoundCloud = require('soundcloud-scraper');
 const fs = require('fs');
 
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN မရှိပါ!');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
-
-// အရင်က Error တက်သော Client ID ပြဿနာကို ဖြေရှင်းပေးမည့်အပိုင်း
-play.getFreeClientID().then((clientID) => {
-    play.setToken({
-        soundcloud: {
-            client_id: clientID
-        }
-    });
-    console.log("SoundCloud Client ID အောင်မြင်စွာ ချိတ်ဆက်ပြီးပါပြီ။");
-}).catch(err => console.error("SoundCloud Client ID Error:", err));
+const scClient = new SoundCloud.Client();
 
 bot.start((ctx) => ctx.reply('🎵 Music Bot မှ ကြိုဆိုပါတယ်။\nသီချင်းရှာရန် ဥပမာ: /play လွမ်းရက်တွေ ဟု ရိုက်ထည့်ပါ။'));
 
@@ -27,24 +18,22 @@ bot.command('play', async (ctx) => {
     const waitMsg = await ctx.reply('🔍 သီချင်းရှာနေပါတယ်... ခဏစောင့်ပါဗျ။');
 
     try {
-        const searchResult = await play.search(query, {
-            limit: 1,
-            source: { soundcloud: "tracks" }
-        });
+        // သီချင်းရှာဖွေခြင်း
+        const searchResults = await scClient.search(query, 'track');
 
-        if (!searchResult || searchResult.length === 0) {
+        if (!searchResults || searchResults.length === 0) {
             return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းရှာမတွေ့ပါဘူးဗျ။ တခြားနာမည် ပြောင်းရှာကြည့်ပါ။');
         }
 
-        const track = searchResult[0];
-        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${track.name}** ကို ဆွဲနေပါတယ်... (စက်ထဲသို့ သိမ်းနေသည်)`);
+        const track = searchResults[0];
+        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${track.title}** ကို ဆွဲနေပါတယ်... (စက်ထဲသို့ သိမ်းနေသည်)`);
 
-        // သီချင်းအပြည့်ကို Stream အဖြစ် ဆွဲယူခြင်း
-        const stream = await play.stream(track.url);
+        // 10s ပြဿနာမရှိစေရန် downloadProgressive() ကို အသုံးပြုခြင်း
+        const stream = await track.downloadProgressive();
         const fileName = `./${Date.now()}.mp3`;
         const writeStream = fs.createWriteStream(fileName);
 
-        stream.stream.pipe(writeStream);
+        stream.pipe(writeStream);
 
         writeStream.on('finish', async () => {
             try {
@@ -53,8 +42,8 @@ bot.command('play', async (ctx) => {
                 await ctx.replyWithAudio({
                     source: fileName
                 }, {
-                    title: track.name,
-                    performer: track.publisher?.artist || "Unknown Artist"
+                    title: track.title,
+                    performer: track.author.name || "Unknown Artist"
                 });
 
                 if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
@@ -62,20 +51,20 @@ bot.command('play', async (ctx) => {
 
             } catch (sendError) {
                 console.error("Telegram Send Error:", sendError);
-                ctx.reply('❌ Telegram သို့ ပို့ရာတွင် အမှားအယွင်းဖြစ်သွားပါတယ်။');
+                ctx.reply('❌ Telegram သို့ ပို့ရာတွင် ဖိုင်ဆိုဒ်ကြီးလွန်းသဖြင့် အမှားအယွင်းဖြစ်သွားပါတယ်။');
                 if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
             }
         });
 
-        stream.stream.on('error', (err) => {
+        stream.on('error', (err) => {
             console.error("Download Error:", err.message);
             ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ ဒေါင်းလုဒ်ဆွဲရာတွင် အမှားအယွင်းဖြစ်သွားပါသည်။');
         });
 
     } catch (error) {
         console.error("General Error:", error.message);
-        ctx.reply('❌ အမှားအယွင်းဖြစ်သွားပါတယ်။');
+        ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ အမှားအယွင်းဖြစ်သွားပါတယ်။ တခြားသီချင်း ပြောင်းရှာကြည့်ပါ။');
     }
 });
 
-bot.launch().then(() => console.log('Music Bot is running with Play-DL...')).catch(err => console.error(err));
+bot.launch().then(() => console.log('Music Bot is running with SoundCloud Scraper...')).catch(err => console.error(err));
