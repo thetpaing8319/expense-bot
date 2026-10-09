@@ -1,12 +1,12 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const ytSearch = require('yt-search');
-const play = require('play-dl');
+const SoundCloud = require('soundcloud-scraper');
 const fs = require('fs');
 
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN မရှိပါ!');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+const scClient = new SoundCloud.Client();
 
 bot.start((ctx) => ctx.reply('🎵 Music Bot မှ ကြိုဆိုပါတယ်။\nသီချင်းရှာရန် ဥပမာ: /play လွမ်းရက်တွေ ဟု ရိုက်ထည့်ပါ။'));
 
@@ -18,21 +18,24 @@ bot.command('play', async (ctx) => {
     const waitMsg = await ctx.reply('🔍 သီချင်းရှာနေပါတယ်... ခဏစောင့်ပါဗျ။');
 
     try {
-        const ytResult = await ytSearch(query);
-        const video = ytResult.videos.length > 0 ? ytResult.videos[0] : null;
-
-        if (!video) {
+        // YouTube ကို လုံးဝမသုံးတော့ဘဲ SoundCloud တွင် တိုက်ရိုက်ရှာဖွေခြင်း
+        const scResult = await scClient.search(query, 'track');
+        
+        if (!scResult || scResult.length === 0) {
             return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းရှာမတွေ့ပါဘူးဗျ။ တခြားနာမည် ပြောင်းရှာကြည့်ပါ။');
         }
 
-        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${video.title}** ကို ဆွဲနေပါတယ်...`);
+        const trackInfo = scResult[0];
+        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${trackInfo.title}** ကို ဆွဲနေပါတယ်... (SoundCloud မှ ဆွဲယူနေပါသည်)`);
 
-        // Python မလိုသော play-dl ဖြင့် ဒေါင်းလုဒ်ဆွဲခြင်း
-        const stream = await play.stream(video.url);
+        // URL မှတစ်ဆင့် သီချင်းအပြည့်အစုံကို ပြန်ခေါ်ခြင်း (404 Error ဖြေရှင်းရန်)
+        const fullTrack = await scClient.getSongInfo(trackInfo.url);
+        const stream = await fullTrack.downloadProgressive();
+        
         const fileName = `./${Date.now()}.mp3`;
         const writeStream = fs.createWriteStream(fileName);
 
-        stream.stream.pipe(writeStream);
+        stream.pipe(writeStream);
 
         writeStream.on('finish', async () => {
             try {
@@ -41,8 +44,8 @@ bot.command('play', async (ctx) => {
                 await ctx.replyWithAudio({
                     source: fileName
                 }, {
-                    title: video.title,
-                    performer: video.author.name
+                    title: trackInfo.title,
+                    performer: fullTrack.author.name || "Unknown Artist"
                 });
 
                 if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
@@ -55,7 +58,7 @@ bot.command('play', async (ctx) => {
             }
         });
 
-        stream.stream.on('error', (err) => {
+        stream.on('error', (err) => {
             console.error("Download Error:", err.message);
             ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ ဒေါင်းလုဒ်ဆွဲရာတွင် အမှားအယွင်းဖြစ်သွားပါသည်။');
         });
@@ -66,4 +69,4 @@ bot.command('play', async (ctx) => {
     }
 });
 
-bot.launch().then(() => console.log('Music Bot is running smoothly with play-dl...')).catch(err => console.error(err));
+bot.launch().then(() => console.log('Music Bot is safely running with SoundCloud...')).catch(err => console.error(err));
