@@ -1,72 +1,61 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const SoundCloud = require('soundcloud-scraper');
-const fs = require('fs');
+const ytSearch = require('yt-search');
+const axios = require('axios');
 
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN မရှိပါ!');
-
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const scClient = new SoundCloud.Client();
 
 bot.start((ctx) => ctx.reply('🎵 Music Bot မှ ကြိုဆိုပါတယ်။\nသီချင်းရှာရန် ဥပမာ: /play လွမ်းရက်တွေ ဟု ရိုက်ထည့်ပါ။'));
 
 bot.command('play', async (ctx) => {
     const query = ctx.message.text.split(' ').slice(1).join(' ');
-    
     if (!query) return ctx.reply('ကျေးဇူးပြု၍ သီချင်းနာမည် ရိုက်ထည့်ပါ။ ဥပမာ: /play လွမ်းရက်တွေ');
 
     const waitMsg = await ctx.reply('🔍 သီချင်းရှာနေပါတယ်... ခဏစောင့်ပါဗျ။');
 
     try {
-        // YouTube ကို လုံးဝမသုံးတော့ဘဲ SoundCloud တွင် တိုက်ရိုက်ရှာဖွေခြင်း
-        const scResult = await scClient.search(query, 'track');
-        
-        if (!scResult || scResult.length === 0) {
-            return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းရှာမတွေ့ပါဘူးဗျ။ တခြားနာမည် ပြောင်းရှာကြည့်ပါ။');
+        // ၁။ YouTube တွင် သီချင်းနာမည် အတိအကျရှာခြင်း
+        const ytResult = await ytSearch(query);
+        const video = ytResult.videos.length > 0 ? ytResult.videos[0] : null;
+
+        if (!video) {
+            return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းရှာမတွေ့ပါဘူးဗျ။');
         }
 
-        const trackInfo = scResult[0];
-        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${trackInfo.title}** ကို ဆွဲနေပါတယ်... (SoundCloud မှ ဆွဲယူနေပါသည်)`);
+        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${video.title}** ကို ဆွဲယူနေပါသည်...`);
 
-        // URL မှတစ်ဆင့် သီချင်းအပြည့်အစုံကို ပြန်ခေါ်ခြင်း (404 Error ဖြေရှင်းရန်)
-        const fullTrack = await scClient.getSongInfo(trackInfo.url);
-        const stream = await fullTrack.downloadProgressive();
-        
-        const fileName = `./${Date.now()}.mp3`;
-        const writeStream = fs.createWriteStream(fileName);
-
-        stream.pipe(writeStream);
-
-        writeStream.on('finish', async () => {
-            try {
-                await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `📤 Telegram သို့ ပို့နေပါပြီ...`);
-                
-                await ctx.replyWithAudio({
-                    source: fileName
-                }, {
-                    title: trackInfo.title,
-                    performer: fullTrack.author.name || "Unknown Artist"
-                });
-
-                if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
-                await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id);
-
-            } catch (sendError) {
-                console.error("Telegram Send Error:", sendError);
-                ctx.reply('❌ Telegram သို့ ပို့ရာတွင် အမှားအယွင်းဖြစ်သွားပါတယ်။');
-                if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
+        // ၂။ Cobalt API ကိုသုံး၍ YouTube မှ MP3 Direct Link ပြောင်းယူခြင်း (Railway IP ပိတ်ခြင်းကို ကျော်လွှားရန်)
+        const response = await axios.post('https://api.cobalt.tools/api/json', {
+            url: video.url,
+            isAudioOnly: true
+        }, {
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
             }
         });
 
-        stream.on('error', (err) => {
-            console.error("Download Error:", err.message);
-            ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ ဒေါင်းလုဒ်ဆွဲရာတွင် အမှားအယွင်းဖြစ်သွားပါသည်။');
+        if (!response.data || !response.data.url) {
+            throw new Error("Cobalt API မှ Link မရရှိပါ။");
+        }
+
+        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `📤 Telegram သို့ ပို့နေပါပြီ...`);
+
+        // ၃။ ရလာသော Direct Link ကို Telegram သို့ တိုက်ရိုက်ပို့ခြင်း (သင့်စက်မှ ဒေါင်းလုဒ်ဆွဲစရာမလိုတော့ပါ)
+        await ctx.replyWithAudio({
+            url: response.data.url
+        }, {
+            title: video.title,
+            performer: video.author.name
         });
+
+        await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id);
 
     } catch (error) {
         console.error("General Error:", error.message);
-        ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ အမှားအယွင်းဖြစ်သွားပါတယ်။ တခြားသီချင်း ပြောင်းရှာကြည့်ပါ။');
+        ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ ဒေါင်းလုဒ်ဆွဲရာတွင် အမှားအယွင်းဖြစ်သွားပါတယ်။ တခြားသီချင်း ပြောင်းရှာကြည့်ပါ။');
     }
 });
 
-bot.launch().then(() => console.log('Music Bot is safely running with SoundCloud...')).catch(err => console.error(err));
+bot.launch().then(() => console.log('Music Bot is running with Cobalt API...')).catch(err => console.error(err));
