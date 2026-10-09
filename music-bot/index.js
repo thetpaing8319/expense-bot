@@ -1,13 +1,12 @@
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const SoundCloud = require('soundcloud-scraper');
 const ytSearch = require('yt-search');
+const ytdl = require('@distube/ytdl-core');
 const fs = require('fs');
 
 if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN မရှိပါ!');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const scClient = new SoundCloud.Client();
 
 bot.start((ctx) => ctx.reply('🎵 Music Bot မှ ကြိုဆိုပါတယ်။\nသီချင်းရှာရန် ဥပမာ: /play လွမ်းရက်တွေ ဟု ရိုက်ထည့်ပါ။'));
 
@@ -19,6 +18,7 @@ bot.command('play', async (ctx) => {
     const waitMsg = await ctx.reply('🔍 သီချင်းရှာနေပါတယ်... ခဏစောင့်ပါဗျ။');
 
     try {
+        // YouTube တွင် သီချင်းရှာဖွေခြင်း
         const ytResult = await ytSearch(query);
         const video = ytResult.videos.length > 0 ? ytResult.videos[0] : null;
 
@@ -26,18 +26,10 @@ bot.command('play', async (ctx) => {
             return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းရှာမတွေ့ပါဘူးဗျ။ တခြားနာမည် ပြောင်းရှာကြည့်ပါ။');
         }
 
-        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${video.title}** ကို ဆွဲနေပါတယ်... (စက်ထဲသို့ သိမ်းနေသည်)`);
+        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${video.title}** ကို ဆွဲနေပါတယ်...`);
 
-        const scResult = await scClient.search(video.title, 'track');
-        
-        if (!scResult || scResult.length === 0) {
-            return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းကို ဒေါင်းလုဒ်ဆွဲရန် မတွေ့ရှိပါ။');
-        }
-
-        // Error ဖြေရှင်းထားသော အပိုင်း (URL မှတစ်ဆင့် သီချင်းအပြည့်အစုံကို ပြန်ခေါ်ခြင်း)
-        const fullTrack = await scClient.getSongInfo(scResult[0].url);
-        const stream = await fullTrack.downloadProgressive();
-        
+        // YouTube မှ အသံဖိုင်ကို ဒေါင်းလုဒ်ဆွဲခြင်း
+        const stream = ytdl(video.url, { filter: 'audioonly', quality: 'highestaudio' });
         const fileName = `./${Date.now()}.mp3`;
         const writeStream = fs.createWriteStream(fileName);
 
@@ -51,7 +43,7 @@ bot.command('play', async (ctx) => {
                     source: fileName
                 }, {
                     title: video.title,
-                    performer: fullTrack.author.name || "Unknown Artist"
+                    performer: video.author.name
                 });
 
                 if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
@@ -75,4 +67,4 @@ bot.command('play', async (ctx) => {
     }
 });
 
-bot.launch().then(() => console.log('Music Bot is running smoothly...')).catch(err => console.error(err));
+bot.launch().then(() => console.log('Music Bot is running with YTDL-Core...')).catch(err => console.error(err));
