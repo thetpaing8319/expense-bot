@@ -21,6 +21,7 @@
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
     "@prisma/client": "^5.20.0",
+    "axios": "^1.20.0",
     "dotenv": "^18.0.6",
     "express": "^5.2.1",
     "soundcloud-scraper": "^5.0.3",

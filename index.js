@@ -1,104 +1,105 @@
-const express = require('express');
-const app = express();
-app.get('/', (req, res) => res.send('Bot is running successfully!'));
-app.listen(process.env.PORT || 3000, () => console.log('Web server is ready.'));
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const { PrismaClient } = require('@prisma/client');
+const ytSearch = require('yt-search');
+const axios = require('axios');
+const fs = require('fs');
 
-if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN ကို .env ဖိုင်ထဲမှာ ထည့်မထားပါ။');
-
+if (!process.env.BOT_TOKEN) throw new Error('BOT_TOKEN မရှိပါ!');
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const prisma = new PrismaClient();
 
-bot.start((ctx) => ctx.reply('ငွေစာရင်းမှတ် Bot မှ ကြိုဆိုပါတယ်။\nအသုံးစရိတ်သွင်းရန်: /add 5000 ထမင်းဖိုး\nဝင်ငွေသွင်းရန်: /income 50000 လစာ'));
+// JWT Token မလိုသော လွတ်လပ်သည့် Cobalt ဆာဗာများ စာရင်း
+const COBALT_INSTANCES = [
+    'https://cobalt.canine.ly',
+        'https://co.eepy.today',
+            'https://cobalt.cachyos.org',
+                'https://cobalt.starnix.network'
+                ];
 
-// --- အသုံးစရိတ် (Expense) ထည့်ရန် ---
-bot.command('add', async (ctx) => {
-    const text = ctx.message.text.split(' ');
-    if (text.length < 3) return ctx.reply('ကျေးဇူးပြု၍ ပုံစံမှန်ရိုက်ပါ။ ဥပမာ: /add 5000 ထမင်းဖိုး');
+                bot.start((ctx) => ctx.reply('🎵 Music Bot မှ ကြိုဆိုပါတယ်။\nသီချင်းရှာရန်: /play သီချင်းနာမည် ဟု ရိုက်ထည့်ပါ။'));
 
-    const amount = parseFloat(text[1]);
-    const category = text.slice(2).join(' ');
-    const userId = ctx.from.id.toString();
+                bot.command('play', async (ctx) => {
+                    const query = ctx.message.text.split(' ').slice(1).join(' ');
+                        if (!query) return ctx.reply('ကျေးဇူးပြု၍ သီချင်းနာမည် ရိုက်ထည့်ပါ။ ဥပမာ: /play perfect');
 
-    if (isNaN(amount)) return ctx.reply('ငွေပမာဏ မှားယွင်းနေပါသည်။');
+                            const waitMsg = await ctx.reply('🔍 သီချင်းရှာနေပါတယ်... ခဏစောင့်ပါဗျ။');
 
-    try {
-        await prisma.expense.create({ data: { userId, amount, category } });
-        ctx.reply(`အသုံးစရိတ်: ${category} အတွက် ${amount} ကျပ် စာရင်းသွင်းပြီးပါပြီ။ 🔴`);
-    } catch (error) {
-        ctx.reply('စာရင်းသွင်းရာတွင် အမှားအယွင်းဖြစ်သွားပါသည်။');
-    }
-});
+                                try {
+                                        // ၁။ YouTube မှ Video ရှာခြင်း
+                                                const ytResult = await ytSearch(query);
+                                                        const video = ytResult.videos.length > 0 ? ytResult.videos[0] : null;
 
-// --- ဝင်ငွေ (Income) ထည့်ရန် ---
-bot.command('income', async (ctx) => {
-    const text = ctx.message.text.split(' ');
-    if (text.length < 3) return ctx.reply('ကျေးဇူးပြု၍ ပုံစံမှန်ရိုက်ပါ။ ဥပမာ: /income 50000 လစာ');
+                                                                if (!video) {
+                                                                            return ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ သီချင်းရှာမတွေ့ပါဘူးဗျ။');
+                                                                                    }
 
-    const amount = parseFloat(text[1]);
-    const source = text.slice(2).join(' ');
-    const userId = ctx.from.id.toString();
+                                                                                            await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `🎧 **${video.title}** ကို ရှာဖွေရရှိပါပြီ... Link ချိတ်ဆက်နေပါသည်`);
 
-    if (isNaN(amount)) return ctx.reply('ငွေပမာဏ မှားယွင်းနေပါသည်။');
+                                                                                                    // ၂။ Community Cobalt ဆာဗာများမှတစ်ဆင့် Audio Link တောင်းယူခြင်း
+                                                                                                            let audioUrl = null;
+                                                                                                                    for (const instance of COBALT_INSTANCES) {
+                                                                                                                                try {
+                                                                                                                                                const res = await axios.post(instance, {
+                                                                                                                                                                    url: video.url,
+                                                                                                                                                                                        downloadMode: 'audio',
+                                                                                                                                                                                                            audioFormat: 'mp3'
+                                                                                                                                                                                                                            }, {
+                                                                                                                                                                                                                                                headers: {
+                                                                                                                                                                                                                                                                        'Accept': 'application/json',
+                                                                                                                                                                                                                                                                                                'Content-Type': 'application/json'
+                                                                                                                                                                                                                                                                                                                    },
+                                                                                                                                                                                                                                                                                                                                        timeout: 10000 // ၁၀ စက္ကန့်စောင့်မည်
+                                                                                                                                                                                                                                                                                                                                                        });
 
-    try {
-        await prisma.income.create({ data: { userId, amount, source } });
-        ctx.reply(`ဝင်ငွေ: ${source} မှ ${amount} ကျပ် စာရင်းသွင်းပြီးပါပြီ။ 🟢`);
-    } catch (error) {
-        ctx.reply('စာရင်းသွင်းရာတွင် အမှားအယွင်းဖြစ်သွားပါသည်။');
-    }
-});
+                                                                                                                                                                                                                                                                                                                                                                        if (res.data && res.data.url) {
+                                                                                                                                                                                                                                                                                                                                                                                            audioUrl = res.data.url;
+                                                                                                                                                                                                                                                                                                                                                                                                                break; // Link ရလျှင် ဆာဗာရှာခြင်းကို ရပ်မည်
+                                                                                                                                                                                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                                                                                                                                                                                            } catch (err) {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                            continue; // Error တက်လျှင် နောက်ဆာဗာတစ်ခုသို့ ပြောင်းမည်
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                        }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                }
 
-// --- Report တွက်ချက်ခြင်း (ဝင်ငွေ + ထွက်ငွေ + လက်ကျန်) ---
-const getReport = async (userId, days, label) => {
-    const date = new Date();
-    date.setDate(date.getDate() - days);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        if (!audioUrl) {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    throw new Error("ဆာဗာများအားလုံး ကျနေပါသည်။");
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }
 
-    const expenses = await prisma.expense.findMany({ where: { userId, date: { gte: date } } });
-    const incomes = await prisma.income.findMany({ where: { userId, date: { gte: date } } });
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `📥 သီချင်းဖိုင်ကို ဒေါင်းလုဒ်ဆွဲနေပါသည်...`);
 
-    const totalExpense = expenses.reduce((sum, item) => sum + item.amount, 0);
-    const totalIncome = incomes.reduce((sum, item) => sum + item.amount, 0);
-    const balance = totalIncome - totalExpense;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            // ၃။ ရလာသော Link မှတစ်ဆင့် MP3 ဖိုင်ကို Bot ထဲသို့ ဆွဲချခြင်း
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    const fileName = `./${Date.now()}.mp3`;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            const response = await axios({
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        method: 'GET',
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    url: audioUrl,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                responseType: 'stream'
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        });
 
-    return `📊 **${label} စာရင်း**\n\n🟢 ဝင်ငွေစုစုပေါင်း: ${totalIncome} ကျပ်\n🔴 သုံးငွေစုစုပေါင်း: ${totalExpense} ကျပ်\n\n💰 လက်ကျန်ငွေ: ${balance} ကျပ်`;
-};
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                const writer = fs.createWriteStream(fileName);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        response.data.pipe(writer);
 
-bot.command('today', async (ctx) => ctx.reply(await getReport(ctx.from.id.toString(), 1, "ယနေ့")));
-bot.command('week', async (ctx) => ctx.reply(await getReport(ctx.from.id.toString(), 7, "ဒီတစ်ပတ်")));
-bot.command('month', async (ctx) => ctx.reply(await getReport(ctx.from.id.toString(), 30, "ဒီတစ်လ")));
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                await new Promise((resolve, reject) => {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            writer.on('finish', resolve);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        writer.on('error', reject);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                });
 
-// --- Excel ဖြင့် ထုတ်ယူရန် ---
-bot.command('export', async (ctx) => {
-    const userId = ctx.from.id.toString();
-    const expenses = await prisma.expense.findMany({ where: { userId } });
-    const incomes = await prisma.income.findMany({ where: { userId } });
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        await ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, `📤 Telegram သို့ ပို့နေပါပြီ...`);
 
-    if (expenses.length === 0 && incomes.length === 0) return ctx.reply('ထုတ်ယူရန် စာရင်းမရှိသေးပါ။');
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                // ၄။ Telegram သို့ ပို့ဆောင်ခြင်း
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        await ctx.replyWithAudio({
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    source: fileName
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }, {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        title: video.title,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    performer: video.author.name
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            });
 
-    let csvContent = 'Date,Type,Category_or_Source,Amount\n';
-    incomes.forEach(row => { csvContent += `${row.date.toISOString().split('T')[0]},Income,${row.source},${row.amount}\n`; });
-    expenses.forEach(row => { csvContent += `${row.date.toISOString().split('T')[0]},Expense,${row.category},${row.amount}\n`; });
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    // ၅။ ပို့ပြီးတာနဲ့ ဖိုင်ကို ပြန်ဖျက်ခြင်း
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id);
 
-    ctx.replyWithDocument({ source: Buffer.from(csvContent, 'utf-8'), filename: 'Financial_Report.csv' });
-});
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        } catch (error) {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                console.error("Music Error:", error.message);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        ctx.telegram.editMessageText(ctx.chat.id, waitMsg.message_id, undefined, '❌ အမှားအယွင်းဖြစ်သွားပါသည်။ အခြားသီချင်းခေါင်းစဉ်ဖြင့် ပြန်လည်စမ်းသပ်ကြည့်ပါ။');
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            });
 
-// --- Commands အားလုံးပြရန် ---
-bot.command('commands', (ctx) => {
-    const helpText = `
-🤖 **အသုံးပြုနိုင်သော Commands များ** 🤖
-
-/add [ငွေ] [အကြောင်းအရာ] - အသုံးစရိတ်သွင်းရန် (ဥပမာ: /add 5000 ထမင်းဖိုး)
-/income [ငွေ] [အကြောင်းအရာ] - ဝင်ငွေသွင်းရန် (ဥပမာ: /income 50000 လစာ)
-/today - ယနေ့ ဝင်ငွေ/ထွက်ငွေ ကြည့်ရန်
-/week - ယခုတစ်ပတ် ဝင်ငွေ/ထွက်ငွေ ကြည့်ရန်
-/month - ယခုလ ဝင်ငွေ/ထွက်ငွေ ကြည့်ရန်
-/export - ဝင်ငွေ/ထွက်ငွေ အားလုံးကို Excel ဖိုင်ဖြင့် ထုတ်ယူရန်
-/commands - အသုံးပြုနိုင်သော Commands များကြည့်ရန်
-`;
-    ctx.reply(helpText);
-});
-
-bot.launch().then(() => console.log('Bot is running...')).catch(err => console.error("Bot Error:", err));
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            bot.launch().then(() => console.log('Music Bot is running via Community Cobalt...')).catch(err => console.error(err));
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
